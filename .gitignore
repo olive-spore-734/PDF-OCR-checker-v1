@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Auto-generated data files
+app/ocr_checker_config.json
+app/ocr_checker_log.json
+app/ocr_checker_errors.log
+
+# Build artifacts
+build_temp/
+standalone/
+*.spec
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
