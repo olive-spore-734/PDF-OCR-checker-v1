@@ -4,6 +4,36 @@ Below is the complete source code of every file in the project, with detailed co
 
 ---
 
+## Notes on v1.1
+
+Version 1.1 adds three features on top of v1. The line numbers in the section walkthroughs below refer to the original v1 layout and may be slightly off in the v1.1 source, but every concept still applies.
+
+### 1. Windows long-path support
+
+Windows historically limits file paths to 260 characters (the `MAX_PATH` constant). Modern Windows can handle longer paths, but only if the path is prefixed with a special marker `\\?\`. Without this prefix, opening, renaming, or even checking the existence of a deeply-nested file fails with "file not found".
+
+A small helper called `_long_path(path)` was added near the top of `pdf_ocr_checker.py`. It takes a normal path and returns the long-path-prefixed version on Windows (and returns the path unchanged on macOS/Linux, where this limit does not exist). Network paths starting with `\\` are converted to `\\?\UNC\...`.
+
+The helper is used wherever the program touches the filesystem: `fitz.open(...)`, `os.rename(...)`, `os.path.exists(...)`, and `os.path.isfile(...)`. The user-facing display paths (used for log messages with `os.path.basename`) are kept unchanged so the log stays readable.
+
+### 2. Abort button
+
+A new `threading.Event` called `self.abort_event` was added to the `App` class. A button labeled **"Abort"** sits next to the existing buttons; it is disabled by default and only enabled while files are being processed. Clicking it calls `self.abort_event.set()`.
+
+The worker functions `process_files` and `_process_remove_suffixes` now check `abort_event.is_set()` at the top of their per-file loop. If the flag is set, they print an "Aborted by user" line and break out of the loop. This means abort takes effect at the boundary between files, not in the middle of one — a clean, predictable cancellation.
+
+### 3. 5-second per-file timeout
+
+Some PDFs (very large, corrupted, or with unusual structures) can take a long time to scan. A new constant `PER_FILE_TIMEOUT = 5.0` defines the maximum time allowed per file.
+
+A wrapper function `pdf_has_text_with_timeout()` runs the original `pdf_has_text()` inside a worker thread using Python's `concurrent.futures.ThreadPoolExecutor`. If the worker does not finish within the timeout, a `TimeoutError` is raised and the executor is shut down without waiting (`shutdown(wait=False)`). The orphaned worker thread is daemonized, so it will not block the program from exiting.
+
+Files that time out are logged as `SKIP   filename (timed out after 5.0s)` and counted in a new `timed_out` field in the session summary.
+
+> **Note:** Python cannot forcibly stop a running thread, so if PyMuPDF is genuinely stuck inside a tight loop the worker thread will continue running in the background until it finishes. In practice this is harmless for a desktop tool — the GUI stays responsive and the user can move on to other files.
+
+---
+
 ### pdf_ocr_checker.py
 
 This is the main program file. It is broken into sections below.
