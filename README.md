@@ -1,12 +1,18 @@
-# PDF-OCR-checker (v1)
+# PDF-OCR-checker (v1.1)
 
 > [!CAUTION]
 > **DISCLAIMER:**  
 > This software was generated with **Claude Code** (Anthropic), using model **Claude Opus 4.6**.  
 > There is no need to credit this repository - this code was not written by myself. Fork or republish at will.   
 > I only publish this because I've seen other people online looking for something similar.   
-> **This software will not be updated and will remain at version 1.**
+> **The original software will not be updated and will remain at version 1.**
 > If you build on it, please change the version number and describe your changes in the README.
+
+## What's new in v1.1
+
+- **Windows long-path support.** Files with paths longer than the legacy 260-character limit (`MAX_PATH`) are now handled correctly. PDFs deep inside nested folders no longer fail with "file not found" errors.
+- **Abort button.** A new **Abort** button appears in the button bar while files are being processed. Clicking it stops processing after the current file finishes (it does not interrupt mid-file).
+- **5-second per-file timeout.** Any single PDF that takes longer than 5 seconds to scan is automatically skipped and logged. This prevents the tool from hanging on very large or corrupted PDFs. Skipped files appear in the session summary under **"Timed out (>5s)"**.
 >   
 > **This is completely vibe-coded but was tested with thousands of PDFs and worked without any problems!**  
 
@@ -72,7 +78,7 @@ There are two ways to get this tool. Choose whichever you prefer:
 ### Option A: Standalone EXE (no Python required)
 
 1. Go to the [**Releases**](../../releases) page.
-2. Download **`PDF OCR Checker v1.exe`**.
+2. Download **`PDF OCR Checker v1.1.exe`**.
 3. Place it anywhere on your computer and double-click to run. That's it.
 
 The standalone exe is a single file (~31 MB) with everything bundled in. No Python, no setup, no dependencies. You can also drag PDF files directly onto the exe to process them.
@@ -86,7 +92,7 @@ The standalone exe is a single file (~31 MB) with everything bundled in. No Pyth
 
 ### Building the EXE Yourself
 
-If you want to compile the standalone exe from source, open the `app` subfolder and double-click **`build.bat`**. It installs PyInstaller and builds `standalone/PDF OCR Checker v1.exe` automatically.
+If you want to compile the standalone exe from source, open the `app` subfolder and double-click **`build.bat`**. It installs PyInstaller and builds `standalone/PDF OCR Checker v1.1.exe` automatically.
 
 ---
 
@@ -94,7 +100,7 @@ If you want to compile the standalone exe from source, open the `app` subfolder 
 
 ### With the Standalone EXE
 
-1. Double-click **`PDF OCR Checker v1.exe`** to open the application window.
+1. Double-click **`PDF OCR Checker v1.1.exe`** to open the application window.
 2. Drag PDF files into the drop zone, or click **"Browse Files..."** to select them.
 3. You can also drag PDF files directly onto the exe file icon to auto-process them.
 
@@ -191,4 +197,4 @@ Settings are saved to `ocr_checker_config.json` and remembered between sessions.
 | `ocr_checker_config.json` | `app/` *(auto-created)* | Stores your settings (suffixes, dark/light mode, font size). |
 | `ocr_checker_log.json` | `app/` *(auto-created)* | Stores cumulative statistics and session history. |
 | `ocr_checker_errors.log` | `app/` *(auto-created)* | Timestamped log of all errors encountered during processing. |
-| `PDF OCR Checker v1.exe` | [Releases](../../releases) | Standalone exe. No Python required. Download from the Releases page. |
+| `PDF OCR Checker v1.1.exe` | [Releases](../../releases) | Standalone exe (v1.1). No Python required. Download from the Releases page. |
