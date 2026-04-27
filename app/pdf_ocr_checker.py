@@ -10,9 +10,27 @@ import sys
 import json
 import fitz  # PyMuPDF
 import threading
+import concurrent.futures
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
+
+# Skip any single file that takes longer than this to scan for OCR text.
+PER_FILE_TIMEOUT = 5.0
+
+
+def _long_path(path):
+    """Return a Windows long-path-prefixed version of `path` so file operations
+    work for paths longer than the legacy 260-character MAX_PATH limit.
+    On non-Windows platforms, returns the path unchanged."""
+    if sys.platform != "win32" or not path:
+        return path
+    abs_path = os.path.abspath(path)
+    if abs_path.startswith("\\\\?\\"):
+        return abs_path
+    if abs_path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + abs_path[2:]
+    return "\\\\?\\" + abs_path
 
 # Try to import tkinterdnd2 for drag-and-drop support
 try:
@@ -116,7 +134,7 @@ def pdf_has_text(filepath, min_chars=10):
     Returns True if the PDF contains at least `min_chars` non-whitespace characters.
     """
     try:
-        doc = fitz.open(filepath)
+        doc = fitz.open(_long_path(filepath))
         total_text = 0
         for page in doc:
             text = page.get_text().strip()
@@ -128,6 +146,21 @@ def pdf_has_text(filepath, min_chars=10):
         return total_text >= min_chars
     except Exception as e:
         raise RuntimeError(f"Could not read PDF: {e}")
+
+
+def pdf_has_text_with_timeout(filepath, timeout=PER_FILE_TIMEOUT, min_chars=10):
+    """Run pdf_has_text in a worker thread and abort if it exceeds `timeout`.
+    Raises TimeoutError if the scan exceeds the timeout. The orphaned worker
+    thread is daemonized and will exit with the process."""
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(pdf_has_text, filepath, min_chars)
+    try:
+        result = future.result(timeout=timeout)
+        executor.shutdown(wait=False)
+        return result
+    except concurrent.futures.TimeoutError:
+        executor.shutdown(wait=False)
+        raise TimeoutError(f"timed out after {timeout:.1f}s")
 
 
 def _sanitize_suffix(suffix):
@@ -158,12 +191,12 @@ def rename_file(filepath, suffix):
 
     # Handle name collision by appending a number
     counter = 1
-    while os.path.exists(new_path):
+    while os.path.exists(_long_path(new_path)):
         new_name = f"{name}{suffix}_{counter}{ext}"
         new_path = os.path.join(directory, new_name)
         counter += 1
 
-    os.rename(filepath, new_path)
+    os.rename(_long_path(filepath), _long_path(new_path))
     return new_path, True
 
 
@@ -183,21 +216,21 @@ def remove_suffix_from_file(filepath, suffixes):
             new_path = os.path.join(directory, new_name)
 
             # Handle name collision
-            if os.path.exists(new_path):
+            if os.path.exists(_long_path(new_path)):
                 counter = 1
                 base = name[:-len(suffix)]
-                while os.path.exists(new_path):
+                while os.path.exists(_long_path(new_path)):
                     new_name = f"{base}_{counter}{ext}"
                     new_path = os.path.join(directory, new_name)
                     counter += 1
 
-            os.rename(filepath, new_path)
+            os.rename(_long_path(filepath), _long_path(new_path))
             return new_path, suffix
 
     return filepath, None
 
 
-def process_files(filepaths, config, log_callback, done_callback):
+def process_files(filepaths, config, log_callback, done_callback, abort_event=None):
     """Process a list of PDF file paths using the current config settings.
     Checks each file for OCR and renames based on the enabled suffix options.
     """
@@ -215,16 +248,23 @@ def process_files(filepaths, config, log_callback, done_callback):
 
     results = {
         "total": 0, "has_ocr": 0, "no_ocr_renamed": 0,
-        "has_ocr_renamed": 0, "already_tagged": 0, "errors": 0
+        "has_ocr_renamed": 0, "already_tagged": 0, "errors": 0,
+        "timed_out": 0, "aborted": False
     }
 
     for filepath in filepaths:
+        if abort_event is not None and abort_event.is_set():
+            log_callback("")
+            log_callback("--- Aborted by user ---")
+            results["aborted"] = True
+            break
+
         filepath = filepath.strip().strip('"').strip("'")
         if not filepath.lower().endswith(".pdf"):
             log_callback(f"  SKIP     {os.path.basename(filepath)} (not a PDF)")
             continue
 
-        if not os.path.isfile(filepath):
+        if not os.path.isfile(_long_path(filepath)):
             error_msg = f"File not found: {filepath}"
             log_callback(f"  ERROR    {error_msg}")
             log_error(error_msg)
@@ -247,7 +287,11 @@ def process_files(filepaths, config, log_callback, done_callback):
             continue
 
         try:
-            has_text = pdf_has_text(filepath)
+            has_text = pdf_has_text_with_timeout(filepath)
+        except TimeoutError as e:
+            log_callback(f"  SKIP     {basename} ({e})")
+            results["timed_out"] += 1
+            continue
         except RuntimeError as e:
             error_msg = f"{basename}: {e}"
             log_callback(f"  ERROR    {error_msg}")
@@ -292,6 +336,7 @@ def process_files(filepaths, config, log_callback, done_callback):
     log_callback(f"  No OCR (renamed):       {results['no_ocr_renamed']}")
     log_callback(f"  Has OCR (tagged):       {results['has_ocr_renamed']}")
     log_callback(f"  Already tagged:         {results['already_tagged']}")
+    log_callback(f"  Timed out (>{PER_FILE_TIMEOUT:.0f}s):       {results['timed_out']}")
     log_callback(f"  Errors:                 {results['errors']}")
 
     # Update persistent statistics
@@ -392,6 +437,7 @@ class App:
         self.root.minsize(550, 450)
 
         self.processing = False
+        self.abort_event = threading.Event()
         self._build_ui()
         self._apply_theme()
 
@@ -535,6 +581,9 @@ class App:
             side="left", padx=(0, 6))
         ttk.Button(self.btn_frame, text="Show All-Time Stats", command=self._show_cumulative).pack(
             side="left", padx=(0, 6))
+        self.abort_btn = ttk.Button(self.btn_frame, text="Abort", command=self._on_abort,
+                                    state="disabled")
+        self.abort_btn.pack(side="left", padx=(0, 6))
 
         # -- Log area --
         self.log_area = scrolledtext.ScrolledText(
@@ -674,7 +723,7 @@ class App:
 
     # ---- Remove Suffixes (runs instead of process_files when remove mode is on) ----
 
-    def _process_remove_suffixes(self, filepaths, config, done_callback):
+    def _process_remove_suffixes(self, filepaths, config, done_callback, abort_event=None):
         """Remove configured suffixes from the given PDF files."""
         suffixes = []
         if config["no_ocr_suffix"]:
@@ -688,6 +737,11 @@ class App:
         skipped = 0
         errors = 0
         for filepath in filepaths:
+            if abort_event is not None and abort_event.is_set():
+                self._log("")
+                self._log("--- Aborted by user ---")
+                break
+
             filepath = filepath.strip().strip('"').strip("'")
             if not filepath.lower().endswith(".pdf"):
                 self._log(f"  SKIP     {os.path.basename(filepath)} (not a PDF)")
@@ -801,9 +855,19 @@ class App:
         """Called when file processing is complete. Re-enables the drop zone."""
         def _finish():
             self.processing = False
-            self.status.config(text="Done")
+            aborted = self.abort_event.is_set()
+            self.status.config(text="Aborted" if aborted else "Done")
             self.drop_label.config(text="Drag & Drop PDF files here\nor click to browse")
+            self.abort_btn.config(state="disabled")
         self.root.after(0, _finish)
+
+    def _on_abort(self):
+        """Signal the worker thread to stop after the current file."""
+        if not self.processing:
+            return
+        self.abort_event.set()
+        self.status.config(text="Aborting...")
+        self.abort_btn.config(state="disabled")
 
     def _start_processing(self, filepaths):
         """Begin processing a list of PDF file paths in a background thread."""
@@ -813,6 +877,8 @@ class App:
             return
 
         self.processing = True
+        self.abort_event.clear()
+        self.abort_btn.config(state="normal")
         self.status.config(text=f"Processing {len(filepaths)} file(s)...")
         self.drop_label.config(text="Processing...")
 
@@ -828,13 +894,14 @@ class App:
             self._log(f"Removing suffixes from {len(filepaths)} file(s)...\n")
             thread = threading.Thread(
                 target=self._process_remove_suffixes,
-                args=(filepaths, config_snapshot, self._done),
+                args=(filepaths, config_snapshot, self._done, self.abort_event),
                 daemon=True)
         else:
             self._log(f"Checking {len(filepaths)} file(s)...\n")
             thread = threading.Thread(
                 target=process_files,
-                args=(filepaths, config_snapshot, self._log, self._done),
+                args=(filepaths, config_snapshot, self._log, self._done,
+                      self.abort_event),
                 daemon=True)
         thread.start()
 
